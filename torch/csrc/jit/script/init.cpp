@@ -262,20 +262,25 @@ static StrongFunctionPtr script_compile_function(
 }
 
 struct VISIBILITY_HIDDEN ModuleSelf : public Self {
-  ModuleSelf(const Module& m, py::object& py_m)
-      : Self(), module_(m), pyModule_(py_m) {}
+  ModuleSelf(
+      const Module& m,
+      std::shared_ptr<ConcreteModuleType> concreteType)
+      : Self(),
+        module_(m),
+        concreteType_(std::move(concreteType)) {}
 
   std::shared_ptr<SugaredValue> makeSugared(Value* v) const override {
     v->setType(module_.type());
-    return std::make_shared<ModuleValue>(v, module_, pyModule_);
+    return std::make_shared<ModuleValue>(v, module_, *concreteType_);
   }
+
   ClassTypePtr getClassType() const override {
     return module_.type();
   }
 
  private:
   const Module& module_;
-  const py::object& pyModule_;
+  std::shared_ptr<ConcreteModuleType> concreteType_;
 };
 
 static TypePtr getTensorType(const at::Tensor& t, bool complete) {
@@ -476,18 +481,19 @@ void initJitScriptBindings(PyObject* module) {
       .def(
           "_define",
           [](Module& m,
-             py::object py_m,
+             std::shared_ptr<ConcreteModuleType> concreteType,
              const std::string& script,
              ResolutionCallback rcb) {
-            const auto self = ModuleSelf(m, py_m);
+            const auto self = ModuleSelf(m, std::move(concreteType));
             m.class_compilation_unit()->define(
                 m.name(), script, pythonResolver(rcb), &self);
             didFinishEmitModule(m);
           })
+      .def("_type", [](Module& m) { return m.type(); })
       .def(
           "_create_methods",
           [](Module& m,
-             py::object py_m,
+             std::shared_ptr<ConcreteModuleType> concreteType,
              const std::vector<Def>& defs,
              const std::vector<ResolutionCallback>& rcbs,
              const std::vector<FunctionDefaults>& defaults) {
@@ -498,7 +504,7 @@ void initJitScriptBindings(PyObject* module) {
               resolvers.push_back(pythonResolver(callback));
             }
             const auto& prefix = m.name();
-            const auto self = ModuleSelf(m, py_m);
+            const auto self = ModuleSelf(m, std::move(concreteType));
             m.class_compilation_unit()->define(prefix, defs, resolvers, &self);
             // Stitch in default arguments for each Def if provided
             auto defaults_it = defaults.begin();
@@ -875,6 +881,10 @@ void initJitScriptBindings(PyObject* module) {
             c10::QualifiedName(qualifiedName), classDef, pythonResolver(rcb));
       });
 
+  m.def("_parse_source_def", [](const std::string& src) {
+    Parser p(std::make_shared<Source>(src));
+    return Def(p.parseFunction(/*is_method=*/true));
+  });
   m.def("parse_type_comment", [](const std::string& comment) {
     Parser p(std::make_shared<Source>(comment));
     return Decl(p.parseTypeComment());
@@ -993,6 +1003,114 @@ void initJitScriptBindings(PyObject* module) {
   });
 
   m.def("_get_graph_executor_optimize", &torch::jit::getGraphExecutorOptimize);
+  m.def(
+      "_make_jit_type_from_concrete_type",
+      [](const std::string& name, const ConcreteModuleType& concreteType) {
+        auto cu = get_python_cu();
+        auto class_name = c10::QualifiedName(name);
+        if (class_name.prefix().empty()) {
+          class_name = c10::QualifiedName("__torch__", class_name.name());
+        }
+        if (cu->get_class(class_name) != nullptr) {
+          class_name = cu->mangle(class_name);
+        }
+        auto cls =
+            ClassType::create(std::move(class_name), cu, /*is_module=*/true);
+        cu->register_type(cls);
+
+        // populate type with info from the concrete type information
+        for (const auto& pr : concreteType.attributes_) {
+          const auto& name = pr.first;
+          const auto& type = pr.second.type_;
+          const auto& isParameter = pr.second.isParam_;
+
+          cls->addAttribute(name, type, isParameter);
+        }
+
+        return cls;
+      });
+
+  m.def("_create_module_with_type", [](const ClassTypePtr& type) {
+    return Module(get_python_cu(), type);
+  });
+
+  py::class_<ConcreteModuleType, std::shared_ptr<ConcreteModuleType>>(
+      m, "ConcreteModuleType")
+      .def(py::init<>())
+      .def(
+          "get_constants",
+          [](const ConcreteModuleType& self) {
+            // Convert to a more pybind-friendly representation, so we don't
+            // need to bind ConcreteModuleType::Attribute as well.
+            std::unordered_map<std::string, py::object> ret;
+            for (const auto& pr : self.constants_){
+              ret.emplace(pr.first, pr.second.v_);
+            }
+            return ret;
+          })
+      .def(
+          "get_attributes",
+          [](ConcreteModuleType& self) {
+            // Convert to a more pybind-friendly representation, so we don't
+            // need to bind ConcreteModuleType::Attribute as well.
+            std::unordered_map<std::string, std::pair<TypePtr, bool>> ret;
+            for (auto& pr : self.attributes_) {
+              ret.emplace(
+                  pr.first,
+                  std::pair<TypePtr, bool>(
+                      pr.second.type_, pr.second.isParam_));
+            }
+            return ret;
+          })
+      .def(
+          "get_module_names",
+          [](const ConcreteModuleType& self) {
+            return fmap(
+                self.modules_, [](const ConcreteModuleType::ModuleInfo& info) {
+                  return info.name;
+                });
+          })
+      .def_property_readonly(
+          "py_class",
+          [](const ConcreteModuleType& self) {
+            return self.pyClass_;
+          })
+      .def("add_constant", &ConcreteModuleType::addConstant)
+      .def("add_attribute", &ConcreteModuleType::addAttribute)
+      .def("add_module", &ConcreteModuleType::addModule)
+      .def("add_pyclass", &ConcreteModuleType::addPyClass)
+      .def("add_overload", &ConcreteModuleType::addOverload)
+      .def(
+          "add_failed_attribute",
+          [](ConcreteModuleType& self, std::string name, std::string pyType) {
+            self.failedAttributes_.emplace(std::move(name), std::move(pyType));
+          })
+      .def(
+          "equals",
+          [](const ConcreteModuleType& self, const ConcreteModuleType& other) {
+            return self == other;
+          })
+      .def("dump", [](const ConcreteModuleType& self) {
+        std::cout << "Constants: \n";
+        for (const auto& pr : self.constants_) {
+          std::cout << "\t" << pr.first << ": " << pr.second.v_ << "\n";
+        }
+        std::cout << "\nAttributes: \n";
+        for (const auto& pr : self.attributes_) {
+          std::cout << "\t" << pr.first << ": " << pr.second.type_->python_str()
+                    << "\n";
+        }
+        std::cout << "\nSubmodules: \n";
+        for (const auto& info : self.modules_) {
+          std::cout << "\t" << info.name << ": " << info.type->python_str()
+                    << "\n";
+        }
+        std::cout << "\nOverloads: \n";
+        for (const auto& pr : self.overloads_) {
+          std::cout << "\t" << pr.first << ": " << pr.second
+                    << "\n";
+        }
+      });
 
   m.def(
       "_resolve_type",

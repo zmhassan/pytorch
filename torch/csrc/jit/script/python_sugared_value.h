@@ -193,18 +193,158 @@ struct VISIBILITY_HIDDEN OverloadedFunctionValue : public SugaredValue {
   std::vector<StrongFunctionPtr> compiled_overloads_;
 };
 
-// defines how modules/methods behave inside the script subset.
-// for now this does not have any interaction with python.
-// in the future, we will add the ability to resolve `self.foo` to python
-// {functions, modules, contants} so this SugaredValue is defined here
-// anticipating we will eventually need to replace Module with a py::object
-// holding the actual nn.Module class.
+// You can think of an nn.Module as a template that corresponds to a family of
+// JIT types. The template "arguments" are things like the constant values.
+// e.g.
+//   class M(nn.Module):
+//        __constants__ = ["const"]
+//        ...
+//
+// Is similar to writing the following in C++:
+//
+//    template<TConst>
+//    class M {
+//       ...
+//    }
+//
+// We need to consider each different member of the type family a different JIT
+// type because, e.g. different constant values lead to different versions of
+// the same method.
+//
+// ConcreteModuleType corresponds to a single member of the type family, with
+// all template arguments fully specified. Two Modules that share a
+// ConcreteModuleType can share a JIT type, and vice versa.
+//
+// Why not just use a JIT type to represent concrete types? Because constants,
+// function attributes, etc. are currently not representable in the type system,
+// so this acts a non-first-class way of tracking concrete types.
+//
+// ConcreteModuleType is also the source of truth for servicing all
+// ModuleValue::attr calls. This is so we can guarantee that if two Module's
+// share a JIT type (and thus a ConcreteModuleType), then they behave the same
+// way when you access attributes on them.
+struct VISIBILITY_HIDDEN ConcreteModuleType {
+  void addPyClass(py::object pyClass) {
+    pyClass_ = std::move(pyClass);
+  }
+
+  void addConstant(std::string name, py::object value) {
+    constants_.emplace(std::move(name), std::move(value));
+  }
+
+  c10::optional<py::object> findConstant(const std::string& name) {
+    auto it = constants_.find(name);
+    if (it != constants_.end()) {
+      return it->second.v_;
+    }
+    return c10::nullopt;
+  }
+
+  void addAttribute(std::string name, TypePtr type, bool isParameter) {
+    TORCH_INTERNAL_ASSERT(type);
+    if (auto functionType = type->cast<FunctionType>()) {
+      functionAttributes_.emplace(std::move(name), std::move(functionType));
+    } else {
+      attributes_.emplace(
+          std::move(name), Attribute(unshapedType(type), isParameter));
+    }
+  }
+
+  void addModule(
+      std::string name,
+      TypePtr type,
+      std::shared_ptr<ConcreteModuleType> meta) {
+    TORCH_INTERNAL_ASSERT(type);
+    modules_.emplace_back(
+        ModuleInfo{std::move(name), std::move(type), std::move(meta)});
+  }
+
+  void addOverload(
+      std::string methodName,
+      std::vector<std::string> overloadedMethodNames) {
+    overloads_.emplace(std::move(methodName), std::move(overloadedMethodNames));
+  }
+
+  // This determines whether two modules can share a type. The container structs
+  // used by ConcreteModuleType have been defined such that operator==
+  // implements a meaningful comparison in that context.
+  friend bool operator==(
+      const ConcreteModuleType& lhs,
+      const ConcreteModuleType& rhs) {
+    return lhs.pyClass_.is(rhs.pyClass_) && lhs.constants_ == rhs.constants_ &&
+        lhs.attributes_ == rhs.attributes_ && lhs.modules_ == rhs.modules_ &&
+        lhs.overloads_ == rhs.overloads_ &&
+        lhs.functionAttributes_ == rhs.functionAttributes_;
+  }
+
+  std::shared_ptr<ConcreteModuleType> findSubmoduleConcreteType(
+      const std::string& name) {
+    const auto it = std::find_if(
+        modules_.cbegin(), modules_.cend(), [&](const ModuleInfo& info) {
+          return info.name == name;
+        });
+    if (it == modules_.end()) {
+      return nullptr;
+    }
+    return it->meta;
+  }
+
+  struct Constant {
+    /* implicit */ Constant(py::object v) : v_(std::move(v)) {}
+    friend bool operator==(const Constant& lhs, const Constant& rhs) {
+      // Perform the equivalent of `lhs == rhs` in Python.
+      int rv = PyObject_RichCompareBool(lhs.v_.ptr(), rhs.v_.ptr(), Py_EQ);
+      if (rv == -1) {
+        throw py::error_already_set();
+      }
+      return rv == 1;
+    }
+    py::object v_;
+  };
+
+  struct Attribute {
+    Attribute(TypePtr type, bool isParam)
+        : type_(std::move(type)), isParam_(isParam) {}
+
+    friend bool operator==(const Attribute& lhs, const Attribute& rhs) {
+      return *(lhs.type_) == *(rhs.type_) && lhs.isParam_ == rhs.isParam_;
+    }
+    TypePtr type_;
+    bool isParam_;
+  };
+
+  struct ModuleInfo {
+    std::string name;
+    TypePtr type;
+    std::shared_ptr<ConcreteModuleType> meta;
+
+    friend bool operator==(const ModuleInfo& lhs, const ModuleInfo& rhs) {
+      return *(lhs.type) == *(rhs.type) && lhs.name == rhs.name;
+    }
+  };
+
+  // The value of any constants defined by the module.
+  std::unordered_map<std::string, Constant> constants_;
+  // The types of any attributes
+  std::unordered_map<std::string, Attribute> attributes_;
+  // Overloads, in the same format as `__overloads__` in Python
+  std::unordered_map<std::string, std::vector<std::string>> overloads_;
+  // Any attributes we failed to convert to TorchScript, along with a hint as to why
+  std::unordered_map<std::string, std::string> failedAttributes_;
+  // Any function attributes. These are special right now because functions are
+  // not first-class in the type system.
+  std::unordered_map<std::string, FunctionTypePtr> functionAttributes_;
+  // The concrete types of any submodules
+  std::vector<ModuleInfo> modules_;
+  // The original `nn.Module` class that we derived this ScriptModule from.
+  py::object pyClass_;
+};
 
 struct VISIBILITY_HIDDEN ModuleValue : public SugaredValue {
-  ModuleValue(Value* self, Module module, py::object py_module)
+  ModuleValue(Value* self, Module module, ConcreteModuleType concreteType)
       : self_(self),
         module_(std::move(module)),
-        py_module_(std::move(py_module)) {}
+        concreteType_(std::move(concreteType)) {}
 
   std::string kind() const override {
     return "module";
@@ -241,15 +381,14 @@ struct VISIBILITY_HIDDEN ModuleValue : public SugaredValue {
       Value* newValue) override;
 
  private:
-  Value* self_;
-  Module module_;
-  py::object py_module_;
-
   std::vector<std::shared_ptr<SugaredValue>> desugarModuleContainer(
       bool get_keys,
       bool get_values,
       const SourceRange& loc,
       Function& m);
+  Value* self_;
+  Module module_;
+  ConcreteModuleType concreteType_;
 };
 
 struct VISIBILITY_HIDDEN BooleanDispatchValue : public SugaredValue {
