@@ -52,7 +52,7 @@
 // (See https://github.com/pytorch/pytorch/issues/9515)
 //
 // Note that TensorIterator currently supports type conversions on 0-dim
-// tensors and arithmetic operators. Other type conversions will raise an 
+// tensors and arithmetic operators. Other type conversions will raise an
 // exception.
 
 namespace at {
@@ -328,7 +328,7 @@ protected:
   void reorder_dimensions();
   void permute_dimensions(IntArrayRef perm);
   void compute_types();
-  std::tuple<Device, ScalarType> compute_common_type();
+  std::tuple<Device, ScalarType, bool> compute_common_type();
   void allocate_outputs();
 #ifdef BUILD_NAMEDTENSOR
   void compute_names();

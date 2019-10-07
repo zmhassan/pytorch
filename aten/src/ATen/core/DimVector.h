@@ -5,7 +5,7 @@
 
 namespace at {
 
-constexpr size_t kDimVectorStaticSize = 5;
+constexpr size_t kDimVectorStaticSize = 6;
 
 /// A container for sizes or strides
 using DimVector = SmallVector<int64_t, kDimVectorStaticSize>;
