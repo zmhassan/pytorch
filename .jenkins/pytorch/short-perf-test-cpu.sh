@@ -42,9 +42,17 @@ if [[ "$COMMIT_SOURCE" == master ]]; then
     python update_commit_hash.py new_cpu_runtime.json ${MASTER_COMMIT_ID}
 fi
 
+popd
+python setup.py install
+pushd .jenkins/pytorch/perf_test
+
 # Include tests
 . ./test_cpu_speed_mini_sequence_labeler.sh
-. ./test_cpu_speed_mnist.sh
+# test_gpu_speed_mnist.sh and test_cpu_speed_mnist.sh run
+# "conda install -c pytorch torchvision", which would install pytorch-1.3 libs.
+# These tests then work on Python source files from master, which is
+# inconsistent with underlying libs.
+#. ./test_cpu_speed_mnist.sh
 . ./test_cpu_speed_torch.sh
 . ./test_cpu_speed_torch_tensor.sh
 
@@ -60,7 +68,7 @@ run_test test_cpu_speed_torch_tensor ${TEST_MODE}
 
 # Sample model tests
 run_test test_cpu_speed_mini_sequence_labeler 20 ${TEST_MODE}
-run_test test_cpu_speed_mnist 20 ${TEST_MODE}
+#run_test test_cpu_speed_mnist 20 ${TEST_MODE}
 
 if [[ "$COMMIT_SOURCE" == master ]]; then
     # This could cause race condition if we are testing the same master commit twice,
