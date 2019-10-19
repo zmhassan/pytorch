@@ -117,7 +117,8 @@ void ProcessGroupAgent::collectNames() {
 ProcessGroupAgent::ProcessGroupAgent(
     std::string workerName,
     std::shared_ptr<c10d::ProcessGroup> pg,
-    int numSendRecvThreads)
+    int numSendRecvThreads,
+    int sleepMillis)
     : RpcAgent(
           WorkerInfo(std::move(workerName), pg->getRank()),
           c10::guts::make_unique<RequestCallbackImpl>()),
@@ -125,6 +126,8 @@ ProcessGroupAgent::ProcessGroupAgent(
       sendCounts_(pg_->getSize()),
       recvCounts_(pg_->getSize()),
       nextId_(0),
+      shutdown_(false),
+      sleepMillis_(sleepMillis),
       sendMutexes_(pg_->getSize()),
       threadPool_(numSendRecvThreads) {
   collectNames();
@@ -157,6 +160,20 @@ ProcessGroupAgent::ProcessGroupAgent(
   for (int rank = 0; rank < (int)tmpWorkerIds.size(); ++rank) {
     allWorkerInfo_.emplace_back(std::move(tmpWorkerIds[rank]), rank);
   }
+}
+
+ProcessGroupAgent::~ProcessGroupAgent() {
+  std::cout << "in destructor\n";
+  LOG(INFO) << "Shutting down process group agent without joining";
+  shutdown_ = true;
+  std::cout << "waiting work complete \n";
+  threadPool_.waitWorkComplete(); // test
+  std::cout << "done waiting work complete, checking if needed to join\n";
+  if (listenerThread_.joinable()) {
+    std::cout << "running join...\n";
+    listenerThread_.join();
+  }
+  std::cout << "done, finally\n";
 }
 
 const WorkerInfo& ProcessGroupAgent::getWorkerInfo(
@@ -378,10 +395,19 @@ void ProcessGroupAgent::enqueueRecv(RecvWork work) {
 }
 
 void ProcessGroupAgent::listenLoop() {
-  while (true) {
+  std::cout << "called listenLooop\n";
+  while (!shutdown_) {
+    std::cout << "looping...\n";
     // rank, tensor size, message type
     std::vector<torch::Tensor> preamble = {torch::empty({3}, {torch::kInt64})};
     pg_->recvAnysource(preamble, pg_->getRank())->wait();
+    if (shutdown_) {
+      std::cout << "got shutdown, leaving this\n";
+      return;
+    }
+
+    std::cout << "got work to do\n";
+
     int64_t* preamble_items = preamble.front().storage().data<int64_t>();
 
     auto srcRank = preamble_items[0];

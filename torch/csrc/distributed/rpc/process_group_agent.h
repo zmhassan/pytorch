@@ -38,7 +38,10 @@ class ProcessGroupAgent : public RpcAgent {
   ProcessGroupAgent(
       std::string workerName,
       std::shared_ptr<c10d::ProcessGroup> pg,
-      int numSendRecvThreads = 4);
+      int numSendRecvThreads = 4,
+      int sleepMillis = 100);
+
+  ~ProcessGroupAgent() override;
 
   const WorkerInfo& getWorkerInfo(const std::string& workerName) const override;
 
@@ -116,6 +119,12 @@ class ProcessGroupAgent : public RpcAgent {
   MessageCounter recvCounts_;
 
   std::atomic<int64_t> nextId_;
+  // tracks whether we should shutdown the listenerThread_ that processes
+  // incoming messages.
+  std::atomic<bool> shutdown_;
+  // amount of time in milliseconds to sleep for while waiting for work in the
+  // listenerThread.
+  int sleepMillis_;
   // one mutex per ProcessGroup rank, as ProcessGroup::send is not thread-safe
   // when using the same tag.
   std::vector<std::mutex> sendMutexes_;
