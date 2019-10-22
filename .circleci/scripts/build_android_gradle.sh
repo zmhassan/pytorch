@@ -56,4 +56,15 @@ else
     $GRADLE_PATH -p ~/workspace/android/ assembleRelease
 fi
 
+
+find . -type f -name "*.a" | xargs ls -lah
+
+for f in `find . -type f -name "*.aar"`;
+do
+  echo
+  echo $f
+  ls -lah $f
+  zipinfo -l $f
+done
+
 find . -type f -name *aar -print | xargs tar cfvz ~/workspace/android/artifacts.tgz
