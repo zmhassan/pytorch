@@ -298,9 +298,16 @@ std::shared_ptr<SugaredValue> ModuleValue::attr(
     return std::make_shared<ModuleValue>(
         m.graph()->insertGetAttr(self_, field), submoduleConcreteType);
   } else if (selfType->hasAttribute(field) || selfType->getMethod(field)) {
+    if (concreteType_->isProperty(field)) {
+      // Property methods need to be handled specially since they behave like
+      // values
+      return std::make_shared<PropertyValue>(
+          SimpleValue(self_).attr(loc, m, field));
+    } else {
       // ...otherwise, methods, parameters, attributes, and buffers are all
       // first class so they get returned as SimpleValues
       return SimpleValue(self_).attr(loc, m, field);
+    }
   }
 
   // 2. Check if it's a user-provided constant property.
@@ -342,18 +349,20 @@ std::shared_ptr<SugaredValue> ModuleValue::attr(
     return std::make_shared<FunctionValue>(*fnAttr);
   }
 
-  // 6. Check if it's a property of the original Python class that this
-  // ScriptModule was derived from. The only class properties we handle are
-  // methods.
+  // 6. Check if it's an attribute of the original Python class that this
+  // ScriptModule was derived from. The only class attributes we handle are
+  // methods and properties
   py::object unboundMethod = py::getattr(
       concreteType_->getPyClass(),
       field.c_str(),
       pybind11::cast<pybind11::none>(Py_None));
-  if (py::isinstance<py::function>(unboundMethod)) {
+  py::object isPropertyObj = py::module::import("torch.jit._recursive")
+                                 .attr("is_property")(unboundMethod);
+  bool isProperty = py::cast<bool>(isPropertyObj);
+  if (py::isinstance<py::function>(unboundMethod) || isProperty) {
     // For Python methods that we're trying to call directly, we need to bind
-    // the method to a self. TODO say more about tis
-    //
-    // If the function is @ignored
+    // the method to a self. (see the documentation for lazy_bind in Python for
+    // more info).
     bool isIgnoredFn =
         py::cast<bool>(py::module::import("torch._jit_internal")
                            .attr("is_ignored_fn")(unboundMethod));
@@ -375,7 +384,8 @@ std::shared_ptr<SugaredValue> ModuleValue::attr(
         py::module::import("torch.jit._recursive")
             .attr("compile_unbound_method")(concreteType_, unboundMethod);
     TORCH_INTERNAL_ASSERT(!stub.is_none());
-    return SimpleValue(self_).attr(loc, m, field);
+    // Look up the attribute again, it will be available as a compiled method.
+    return attr(loc, m, field);
   }
 
   // We've exhausted all possibilities. Bailout with a hint to the user.
@@ -619,6 +629,65 @@ std::shared_ptr<SugaredValue> toSugaredValue(
 
   return std::make_shared<PythonValue>(obj);
 }
+
+// Call the underlying method with no arguments to get the property value
+std::shared_ptr<SugaredValue> PropertyValue::callMethod(
+    const SourceRange& loc,
+    Function& m) {
+  return method_->call(
+      loc,
+      m,
+      {},
+      {},
+      /*n_binders=*/1);
+}
+
+Value* PropertyValue::asValue(const SourceRange& range, Function& m) {
+  // Call the underlying method with no arguments.
+  return callMethod(range, m)->asValue(range, m);
+}
+
+std::shared_ptr<SugaredValue> PropertyValue::attr(
+    const SourceRange& loc,
+    Function& m,
+    const std::string& field) {
+  // Call the underlying method with no arguments.
+  return callMethod(loc, m)->attr(loc, m, field);
+}
+
+void PropertyValue::setAttr(
+    const SourceRange& loc,
+    Function& m,
+    const std::string& field,
+    Value* newValue) {
+  return callMethod(loc, m)->setAttr(loc, m, field, newValue);
+}
+
+std::vector<std::shared_ptr<SugaredValue>> PropertyValue::asTuple(
+    const SourceRange& loc,
+    Function& m,
+    const c10::optional<size_t>& size_hint) {
+  // Call the underlying method with no arguments.
+  return callMethod(loc, m)->asTuple(loc, m, size_hint);
+}
+
+std::shared_ptr<SugaredValue> PropertyValue::call(
+    const SourceRange& loc,
+    Function& m,
+    at::ArrayRef<NamedValue> inputs_,
+    at::ArrayRef<NamedValue> attributes,
+    size_t n_binders) {
+  return callMethod(loc, m)->call(loc, m, inputs_, attributes, n_binders);
+}
+
+Value* PropertyValue::len(const SourceRange& loc, Function& m) {
+  return callMethod(loc, m)->len(loc, m);
+}
+
+Value* PropertyValue::getitem(const SourceRange& loc, Function& m, Value* idx) {
+  return callMethod(loc, m)->getitem(loc, m, idx);
+}
+
 } // namespace script
 } // namespace jit
 } // namespace torch
