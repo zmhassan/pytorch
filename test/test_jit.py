@@ -17005,7 +17005,6 @@ nn_functional_tests = [
     ('interpolate', torch.randn(S, M, M, M, M), (4,), 'trilinear_5d_with_size', (True, 'aten::__interpolate')),
 ]
 
-
 # Test names in this set are only checked for a single derivative
 nn_functional_single_grad = frozenset('test_nn_' + name for name in [
     'pdist',
@@ -17370,6 +17369,18 @@ class TestAsync(JitTestCase):
         y_hat = foo(x)
         y = torch.jit._wait(fut)
         # assert nothing; only to make sure the fake python path works
+
+    def test_async_future_type_python(self):
+        def foo(inp):
+            futures = torch.jit.annotate(List[torch.jit.Future[torch.Tensor]], [])
+            for i in range(5):
+                futures.append(torch.jit._fork(lambda x: x, inp))
+            all_outputs = []
+            for future in futures:
+                all_outputs.append(torch.jit._wait(future))
+            return all_outputs
+
+        foo(torch.randn(3, 4))
 
     def test_async_parsing(self):
         @torch.jit.script
