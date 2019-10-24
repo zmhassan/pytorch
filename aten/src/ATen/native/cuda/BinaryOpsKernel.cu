@@ -181,6 +181,60 @@ void ne_kernel_cuda(TensorIterator& iter) {
   }
 }
 
+void max2_kernel_cuda(TensorIterator& iter) {
+  if (iter.dtype() == ScalarType::Bool) {
+    gpu_kernel(iter, []GPU_LAMBDA(bool a, bool b) -> bool {
+      return a || b;
+    });
+  } else if (isIntegralType(iter.dtype(), /*includeBool*/ false)) {
+    AT_DISPATCH_INTEGRAL_TYPES(iter.dtype(), "max2_cuda", [&]() {
+      gpu_kernel(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
+        return ::max(a, b);
+      });
+    });
+  } else {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(iter.dtype(), "max2_cuda", [&]() {
+      gpu_kernel(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
+        // We avoid using nan or nanf because we want to return the same type as scalar_t.
+        if (::isnan(a)) {
+          return a;
+        } else if (::isnan(b)) {
+          return b;
+        } else {
+          return ::max(a, b);
+        }
+      });
+    });
+  }
+}
+
+void min2_kernel_cuda(TensorIterator& iter) {
+  if (iter.dtype() == ScalarType::Bool) {
+    gpu_kernel(iter, []GPU_LAMBDA(bool a, bool b) -> bool {
+      return a && b;
+    });
+  } else if (isIntegralType(iter.dtype(), /*includeBool*/ false)) {
+    AT_DISPATCH_INTEGRAL_TYPES(iter.dtype(), "min2_cuda", [&]() {
+      gpu_kernel(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
+        return ::min(a, b);
+      });
+    });
+  } else {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(iter.dtype(), "min2_cuda", [&]() {
+      gpu_kernel(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
+        // We avoid using nan or nanf because we want to return the same type as scalar_t.
+        if (::isnan(a)) {
+          return a;
+        } else if (::isnan(b)) {
+          return b;
+        } else {
+          return ::min(a, b);
+        }
+      });
+    });
+  }
+}
+
 void smooth_l1_kernel_cuda(TensorIterator& iter) {
   AT_DISPATCH_ALL_TYPES_AND(kHalf, iter.dtype(), "smooth_l1_cuda", [&]() {
     gpu_kernel(iter, [] GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
@@ -202,6 +256,8 @@ REGISTER_DISPATCH(gt_stub, &gt_kernel_cuda);
 REGISTER_DISPATCH(ge_stub, &ge_kernel_cuda);
 REGISTER_DISPATCH(eq_stub, &eq_kernel_cuda);
 REGISTER_DISPATCH(ne_stub, &ne_kernel_cuda);
+REGISTER_DISPATCH(max2_stub, &max2_kernel_cuda);
+REGISTER_DISPATCH(min2_stub, &min2_kernel_cuda);
 REGISTER_DISPATCH(smooth_l1_stub, &smooth_l1_kernel_cuda);
 
 }} // namespace at::native
