@@ -555,6 +555,24 @@ class TestRecursiveScript(JitTestCase):
         m = M()
         self.checkModule(m, (torch.randn(5, 5), ))
 
+    def test_property(self):
+        class M(nn.Module):
+            def __init__(self):
+                super(M, self).__init__()
+                self.x = 0
+
+            @property
+            def x_and_1(self):
+                return self.x + 1
+
+            def forward(self, new_x):
+                # type: (int) -> int
+                self.x = new_x
+                return self.x_and_1
+
+        with self.assertRaisesRegex(RuntimeError, "property"):
+            torch.jit.script(M())
+
 
 if __name__ == '__main__':
     raise RuntimeError("This test file is not meant to be run directly, use:\n\n"
