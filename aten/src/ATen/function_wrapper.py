@@ -89,7 +89,7 @@ case ScalarType::${ScalarName}: {
 # In this case, it will be called for all backends, but can be overwritten on a
 # per backend basis.
 NATIVE_DISPATCH_DECLARATION = CodeTemplate("""\
-${return_type} ${api_name}(${type_method_formals});
+${return_type} ${api_name}(${type_method_formals}) const;
 """)
 
 NATIVE_DISPATCH_DECLARATION_UNDERSCORE = CodeTemplate("""\
@@ -164,18 +164,19 @@ inline ${return_type} Tensor::${api_name}(${method_formals}) const {
 #endif
 }
 """)
-TENSOR_METHOD_DEFINITION_UNDERSCORE = CodeTemplate("""\
-inline ${return_type} Tensor::_${api_name}(${method_formals}) const {
+C10_UNBOXEDONLY_TENSOR_METHOD_DEFINITION = CodeTemplate("""\
+inline ${return_type} Tensor::${api_name}(${method_formals}) const {
 #ifdef USE_STATIC_DISPATCH
     ${static_dispatch_method_body}
 #else
-    static auto table = globalATenDispatch().getOpTable("${schema_string}");
-    return table->callUnboxed<${return_type}, ${formals_types}>(${method_actuals});
+    static c10::OperatorHandle op = c10::Dispatcher::singleton().findSchema({"aten::${operator_name}", "${overload_name}"}).value();
+    return c10::Dispatcher::singleton().callUnboxedOnly<${formals_types_with_return}>(
+        op, c10::impl::dispatchTypeId(${inferred_type_set})${method_actuals_with_comma_prefix});
 #endif
 }
 """)
-C10_UNBOXEDONLY_TENSOR_METHOD_DEFINITION = CodeTemplate("""\
-inline ${return_type} Tensor::${api_name}(${method_formals}) const {
+C10_UNBOXEDONLY_TENSOR_METHOD_DEFINITION_UNDERSCORE = CodeTemplate("""\
+inline ${return_type} Tensor::_${api_name}(${method_formals}) const {
 #ifdef USE_STATIC_DISPATCH
     ${static_dispatch_method_body}
 #else
@@ -280,21 +281,36 @@ NATIVE_DECLARATION = CodeTemplate("""\
 CAFFE2_API ${return_type} ${native_type_method_dispatch}(${formals_with_defaults});
 """)
 
-# special method definition for factory functions in Functions.h that initializes backends
 C10_UNBOXEDONLY_FACTORY_DEFINITION = CodeTemplate("""\
 static inline ${return_type} ${api_name}(${formals}) {
 #ifdef USE_STATIC_DISPATCH
     ${static_dispatch_function_body}
 #else
     //globalLegacyTypeDispatch().initForTensorTypeSet(${inferred_type_set}); // [CHECK THIS]
-    static auto table = globalATenDispatch().getOpTable("${schema_string}");
-    return table->callUnboxed<${return_type}, ${formals_types}>(${native_actuals});
+    static c10::OperatorHandle op = c10::Dispatcher::singleton()
+        .findSchema({"aten::${operator_name}", "${overload_name}"}).value();
+    return c10::Dispatcher::singleton().callUnboxedOnly<${formals_types_with_return}>(
+        op, c10::impl::dispatchTypeId(${inferred_type_set})${native_actuals_with_comma_prefix});
+#endif
+}
+""")
+
+C10_FACTORY_DEFINITION = CodeTemplate("""\
+static inline ${return_type} ${api_name}(${formals}) {
+#ifdef USE_STATIC_DISPATCH
+    ${static_dispatch_function_body}
+#else
+    globalLegacyTypeDispatch().initForTensorTypeSet(${inferred_type_set});
+    static c10::OperatorHandle op = c10::Dispatcher::singleton()
+        .findSchema({"aten::${operator_name}", "${overload_name}"}).value();
+    return c10::Dispatcher::singleton().callUnboxed<${formals_types_with_return}>(
+        op, c10::impl::dispatchTypeId(${inferred_type_set})${native_actuals_with_comma_prefix});
 #endif
 }
 """)
 
 COLLAPSED_FACTORY_DEFINITION = CodeTemplate("""\
-static inline ${return_type} ${api_name}(${collapsed_formals}) {
+inline ${return_type} Tensor::${api_name}(${collapsed_formals}) const {
     return _${api_name}(${expanded_native_actuals});
 }
 """)
@@ -653,8 +669,6 @@ FunctionOption = TypedDict('FunctionOption', {
     'method_actuals_with_comma_prefix': str,
     'method_formals_with_defaults': List[str],
     'method_formals': List[str],
-    #'collapsed_method_formals_with_defaults': List[str],
-    'collapsed_method_formals': List[str],
     'method_prefix_derived': str,
     'named_guard_declaration': str,
     'mode': str,
@@ -968,20 +982,15 @@ def create_generic(top_env, declarations):
         # upshot is that if you have an operator with mixed TensorOptions
         # and Tensor arguments, you MUST only ever register it generically.
         r = []
-        if (any(formal['dynamic_type'] == 'ScalarType' for formal in formals) and
-            any(formal['dynamic_type'] == 'Layout' for formal in formals) and
-            any(formal['dynamic_type'] == 'Device' for formal in formals) and 
-            any(formal['dynamic_type'] == 'bool' for formal in formals)):
+        for formal in formals:
+            if formal['dynamic_type'] == 'TensorOptions':
                 r.append('dtype')
                 r.append('layout')
                 r.append('device')
                 r.append('pin_memory')
-        elif any(formal['dynamic_type'] == 'TensorOptions' for formal in formals):
-            r.append('options')
-        else:
-            for formal in formals:
-                if formal['dynamic_type'] == 'TensorList' or is_any_tensor_type(formal):
-                    r.append(formal['name'])
+            
+            if formal['dynamic_type'] in ['TensorList'] or is_any_tensor_type(formal):
+                r.append(formal['name'])
         return r
 
     def format_formal(f):
@@ -1059,8 +1068,32 @@ def create_generic(top_env, declarations):
             collapsed.pop(index)
             collapsed.pop(index)
             collapsed.pop(index)
-            collapsed.insert(index, 'const TensorOptions & options')
+            collapsed.insert(index, 'const TensorOptions & options={}')
 
+        if (any(formal == 'c10::optional<ScalarType> dtype=c10::nullopt' for formal in formals) and
+            any(formal == 'c10::optional<Layout> layout=c10::nullopt' for formal in formals) and
+            any(formal == 'c10::optional<Device> device=c10::nullopt' for formal in formals) and 
+            any(formal == 'c10::optional<bool> pin_memory=c10::nullopt' for formal in formals)):
+            index = formals.index('c10::optional<ScalarType> dtype=c10::nullopt')
+
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.insert(index, 'const TensorOptions & options={}')
+
+        if (any(formal == 'ScalarType dtype' for formal in formals) and
+            any(formal == 'Layout layout' for formal in formals) and
+            any(formal == 'Device device' for formal in formals) and 
+            (any(formal == 'bool pin_memory' for formal in formals) or any(formal == 'bool pin_memory=false' for formal in formals))):
+            index = formals.index('ScalarType dtype')
+
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.insert(index, 'const TensorOptions & options')
+        
         return collapsed
 
     def collapse_formals_list(formals):
@@ -1290,8 +1323,6 @@ def create_generic(top_env, declarations):
         option['method_formals_with_defaults'] = (
             [formal_with_default(f) for f in formals if f['name'] != 'self'])
 
-        option['collapsed_method_formals'] = collapse_formals(option['method_formals'])
-        #option['collapsed_method_formals_with_defaults'] = collapse_formals_list(option['method_formals_with_defaults'])
 
         # *this is 'const Tensor&' since all Tensor methods are const and must
         # be const_casted to be accepted as native function's non-const argument
@@ -1329,7 +1360,7 @@ def create_generic(top_env, declarations):
             option['inferred_type_set'] = 'c10::detail::multi_dispatch_tensor_type_set({})'.format(
                 ', '.join(swizzle_self(t) for t in multidispatch_tensors)
             )
-
+            
             if isinstance(type_method_dispatch, dict):
                 static_dispatch_function_switches = []
                 # NB: As this code is currently written, there will NEVER be
@@ -1369,7 +1400,7 @@ def create_generic(top_env, declarations):
                 return FunctionCode(
                 declaration=TENSOR_METHOD_DECLARATION_UNDERSCORE.substitute(
                     option, static_dispatch_method_body=static_dispatch_method_body),
-                definition=TENSOR_METHOD_DEFINITION_UNDERSCORE.substitute(
+                definition=C10_UNBOXEDONLY_TENSOR_METHOD_DEFINITION_UNDERSCORE.substitute(
                     option, static_dispatch_method_body=static_dispatch_method_body))
             else:
                 return FunctionCode(
@@ -1441,7 +1472,7 @@ def create_generic(top_env, declarations):
         
         def gen_namespace_collapsed_function2(option):
             declaration = NATIVE_DISPATCH_DECLARATION
-            fn_declaration = declaration.substitute(option, type_method_formals=collapse_formals(option['method_formals']))
+            fn_declaration = declaration.substitute(option, type_method_formals=collapse_formals(option['method_formals_with_defaults']))
 
             expanded_native_actuals = option['collapsed_method_actuals'].copy()
             expanded_native_actuals.remove('const_cast<Tensor&>(*this)')
@@ -1452,7 +1483,7 @@ def create_generic(top_env, declarations):
             expanded_native_actuals.insert(index, 'options.layout()')
             expanded_native_actuals.insert(index, 'typeMetaToScalarType(options.dtype())')
 
-            fn_definition = COLLAPSED_FACTORY_DEFINITION.substitute(option, expanded_native_actuals=expanded_native_actuals)
+            fn_definition = COLLAPSED_FACTORY_DEFINITION.substitute(option, collapsed_formals = collapse_formals(option['method_formals']), expanded_native_actuals=expanded_native_actuals)
             return FunctionCode(definition=fn_definition, declaration=fn_declaration)
 
         # Emit #ifdef BUILD_NAMEDTENSOR macros for any code generated here
@@ -1569,7 +1600,7 @@ def create_generic(top_env, declarations):
 
         method_of = ['Type']
         is_factory_method = check_if_factory_method(option['arguments'])
-      
+
         if is_method:
             code = gen_tensor_method(option, multidispatch_tensors)
             if is_named_tensor_only:

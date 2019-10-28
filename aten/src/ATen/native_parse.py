@@ -261,12 +261,6 @@ def parse_arguments(args, func_variants, declaration, func_return):
 
     new_arguments = []
     idx = 0
-    
-    if declaration['name'] == 'tril_indices':
-        print("\n\n ARGS BEFORE tril_indices: ", arguments)
-
-    if declaration['name'] == 'trul_indices':
-        print("\n\n ARGS BEFORE trul_indices: ", arguments)
 
     #TODO: fix this hack
     while idx < len(arguments):
