@@ -1,10 +1,22 @@
 #pragma once
 
+#include <ostream>
 #include <torch/csrc/jit/graph_executor.h>
+#include <torch/csrc/autograd/function.h>
 
 namespace torch {
 namespace jit {
 namespace detail {
+
+struct DifferentiableGraphBackwardImpl;
+
+struct DifferentiableGraphBackward : public autograd::Node {
+  virtual std::string toString() const;
+  DifferentiableGraphBackward(GraphExecutor executor, size_t input_size, size_t capture_size);
+  std::shared_ptr<DifferentiableGraphBackwardImpl> pImpl;
+protected:
+  virtual autograd::variable_list apply(autograd::variable_list&& inputs) override;
+};
 
 GraphExecutor* getGradExecutor(Operation& op);
 
