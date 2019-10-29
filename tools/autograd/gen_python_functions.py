@@ -447,9 +447,6 @@ def create_python_bindings(python_functions, has_self, is_module=False):
             parsed_type_args = parse_arg(arg, arg_idx, False)
             arg_idx += 1
 
-        if declaration['name'] == 'bartlett_window':
-            print("\n body3: ", body)
-    
         # check python_binding_arguments
         has_device_bind = False
         requires_grad = None

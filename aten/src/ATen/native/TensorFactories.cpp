@@ -55,11 +55,11 @@ void window_function_checks(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ arange ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor arange(Scalar end, const TensorOptions& options) {
-  return native::arange(/*start=*/0, end, options);
+  return native::arange(/*start=*/0, end, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor arange(Scalar start, Scalar end, const TensorOptions& options) {
-  return native::arange(start, end, /*step=*/1, options);
+  return native::arange(start, end, /*step=*/1, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor arange(
@@ -137,7 +137,7 @@ Tensor empty(
 
 Tensor empty_strided_cpu(IntArrayRef size, IntArrayRef stride, const TensorOptions& options) {
   check_size_nonnegative(size);
-  auto t = at::native::empty_cpu({0}, options);
+  auto t = at::native::empty_cpu({0}, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
   at::native::resize_impl_cpu_(t.unsafeGetTensorImpl(), size, stride);
   return t;
 }
@@ -179,7 +179,7 @@ AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, DEFINE_CAST_OP)
 Tensor empty_like(
     const Tensor& self,
     c10::optional<c10::MemoryFormat> optional_memory_format) {
-  return native::empty_like(self, self.options(), optional_memory_format);
+  return native::empty_like(self, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory(), optional_memory_format);
 }
 
 Tensor empty_like(
@@ -271,7 +271,7 @@ Tensor new_empty(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ eye ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor eye(int64_t n, const TensorOptions& options) {
-  return native::eye(n, -1, options);
+  return native::eye(n, -1, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor eye(int64_t n, int64_t m, const TensorOptions& options) {
@@ -328,7 +328,7 @@ Tensor full_like(
     Scalar fill_value,
     c10::optional<c10::MemoryFormat> optional_memory_format) {
   return native::full_like(
-      self, fill_value, self.options(), optional_memory_format);
+      self, fill_value, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory(), optional_memory_format);
 }
 
 Tensor full_like(
@@ -407,7 +407,7 @@ Tensor scalar_tensor(Scalar s, const TensorOptions& options) {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ rand ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor rand(IntArrayRef size, const TensorOptions& options) {
-  return native::rand(size, nullptr, options);
+  return native::rand(size, nullptr, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor rand(IntArrayRef size, Generator* generator, const TensorOptions& options) {
@@ -427,7 +427,7 @@ Tensor& rand_out(Tensor& result, IntArrayRef size, Generator* generator) {
 Tensor rand_like(
     const Tensor& self,
     c10::optional<c10::MemoryFormat> optional_memory_format) {
-  return native::rand_like(self, self.options(), optional_memory_format);
+  return native::rand_like(self, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory(), optional_memory_format);
 }
 
 Tensor rand_like(
@@ -441,7 +441,7 @@ Tensor rand_like(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ randint ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor randint(int64_t high, IntArrayRef size, const TensorOptions& options) {
-  return native::randint(high, size, nullptr, options);
+  return native::randint(high, size, nullptr, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor randint(
@@ -449,7 +449,7 @@ Tensor randint(
     IntArrayRef size,
     Generator* generator,
     const TensorOptions& options) {
-  return native::randint(0, high, size, generator, options);
+  return native::randint(0, high, size, generator, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor randint(
@@ -457,7 +457,7 @@ Tensor randint(
     int64_t high,
     IntArrayRef size,
     const TensorOptions& options) {
-  return native::randint(low, high, size, nullptr, options);
+  return native::randint(low, high, size, nullptr, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor randint(
@@ -498,11 +498,11 @@ Tensor& randint_out(
 }
 
 Tensor randint_like(const Tensor& self, int64_t high) {
-  return native::randint_like(self, high, self.options());
+  return native::randint_like(self, high, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory());
 }
 
 Tensor randint_like(const Tensor& self, int64_t low, int64_t high) {
-  return native::randint_like(self, low, high, self.options());
+  return native::randint_like(self, low, high, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory());
 }
 
 Tensor randint_like(
@@ -523,7 +523,7 @@ Tensor randint_like(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ randn ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor randn(IntArrayRef size, const TensorOptions& options) {
-  return native::randn(size, nullptr, options);
+  return native::randn(size, nullptr, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor randn(IntArrayRef size, Generator* generator, const TensorOptions& options) {
@@ -553,7 +553,7 @@ Tensor& normal_out(Tensor& result, double mean, double std,
 }
 
 Tensor randn_like(const Tensor& self) {
-  return native::randn_like(self, self.options());
+  return native::randn_like(self, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory());
 }
 
 Tensor randn_like(const Tensor& self, const TensorOptions& options) {
@@ -587,7 +587,7 @@ void randperm_cpu(Tensor& result, int64_t n, CPUGenerator* generator) {
 } // namespace
 
 Tensor randperm(int64_t n, const TensorOptions& options) {
-  return native::randperm(n, nullptr, options);
+  return native::randperm(n, nullptr, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor randperm(int64_t n, Generator* generator, const TensorOptions& options) {
@@ -732,7 +732,7 @@ Tensor& zeros_out(Tensor& result, IntArrayRef size) {
 }
 
 Tensor zeros_like(const Tensor& self) {
-  return native::zeros_like(self, self.options());
+  return native::zeros_like(self, typeMetaToScalarType(self.options().dtype()), self.options().layout(), self.options().device(), self.options().pinned_memory());
 }
 
 Tensor zeros_like(const Tensor& self, const TensorOptions& options) {
@@ -755,7 +755,7 @@ Tensor new_zeros(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ bartlett_window ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor bartlett_window(int64_t window_length, const TensorOptions& options) {
-  return native::bartlett_window(window_length, /*periodic=*/true, options);
+  return native::bartlett_window(window_length, /*periodic=*/true, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor bartlett_window(
@@ -781,7 +781,7 @@ Tensor bartlett_window(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ blackman_window ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor blackman_window(int64_t window_length, const TensorOptions& options) {
-  return native::blackman_window(window_length, /*periodic=*/true, options);
+  return native::blackman_window(window_length, /*periodic=*/true, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor blackman_window(
@@ -804,7 +804,7 @@ Tensor blackman_window(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ hamming_window ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor hamming_window(int64_t window_length, const TensorOptions& options) {
-  return native::hamming_window(window_length, /*periodic=*/true, options);
+  return native::hamming_window(window_length, /*periodic=*/true, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor hamming_window(
@@ -812,7 +812,7 @@ Tensor hamming_window(
     bool periodic,
     const TensorOptions& options) {
   return native::hamming_window(
-      window_length, periodic, /*alpha=*/0.54, options);
+      window_length, periodic, /*alpha=*/0.54, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor hamming_window(
@@ -821,7 +821,7 @@ Tensor hamming_window(
     double alpha,
     const TensorOptions& options) {
   return native::hamming_window(
-      window_length, periodic, alpha, /*beta=*/0.46, options);
+      window_length, periodic, alpha, /*beta=*/0.46, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor hamming_window(
@@ -848,7 +848,7 @@ Tensor hamming_window(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ hann_window ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tensor hann_window(int64_t window_length, const TensorOptions& options) {
-  return native::hann_window(window_length, /*periodic=*/true, options);
+  return native::hann_window(window_length, /*periodic=*/true, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor hann_window(
@@ -959,7 +959,7 @@ Tensor randn(
     IntArrayRef size,
     optional<DimnameList> names,
     const TensorOptions& options) {
-  return native::randn(size, nullptr, names, options);
+  return native::randn(size, nullptr, names, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor randn(
@@ -975,7 +975,7 @@ Tensor rand(
     IntArrayRef size,
     optional<DimnameList> names,
     const TensorOptions& options) {
-  return native::rand(size, nullptr, names, options);
+  return native::rand(size, nullptr, names, typeMetaToScalarType(options.dtype()), options.layout(), options.device(), options.pinned_memory());
 }
 
 Tensor rand(

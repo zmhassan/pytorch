@@ -89,6 +89,10 @@ case ScalarType::${ScalarName}: {
 # In this case, it will be called for all backends, but can be overwritten on a
 # per backend basis.
 NATIVE_DISPATCH_DECLARATION = CodeTemplate("""\
+${return_type} ${api_name}(${type_method_formals});
+""")
+
+NATIVE_DISPATCH_DECLARATION_CONST = CodeTemplate("""\
 ${return_type} ${api_name}(${type_method_formals}) const;
 """)
 
@@ -282,7 +286,7 @@ CAFFE2_API ${return_type} ${native_type_method_dispatch}(${formals_with_defaults
 """)
 
 C10_UNBOXEDONLY_FACTORY_DEFINITION = CodeTemplate("""\
-static inline ${return_type} ${api_name}(${formals}) {
+static inline ${return_type} _${api_name}(${formals}) {
 #ifdef USE_STATIC_DISPATCH
     ${static_dispatch_function_body}
 #else
@@ -310,6 +314,12 @@ static inline ${return_type} ${api_name}(${formals}) {
 """)
 
 COLLAPSED_FACTORY_DEFINITION = CodeTemplate("""\
+inline ${return_type} ${api_name}(${collapsed_formals}) {
+    return _${api_name}(${expanded_native_actuals});
+}
+""")
+
+COLLAPSED_METHOD_DEFINITION = CodeTemplate("""\
 inline ${return_type} Tensor::${api_name}(${collapsed_formals}) const {
     return _${api_name}(${expanded_native_actuals});
 }
@@ -735,7 +745,7 @@ def device_guard(option, dispatch_options, dispatch_tensor):
     # For factory methods the `DeviceGuard` is already in the template.
     if option.get('device_guard', True):
         if dispatch_options:
-            return 'const DeviceGuard device_guard(device.value()); // [CHECK THIS]' 
+            return '// const DeviceGuard device_guard(device.value()); // [CHECK THIS]' 
         if dispatch_tensor:
             return 'const OptionalDeviceGuard device_guard(device_of({}));'.format(dispatch_tensor)
     return '// DeviceGuard omitted'
@@ -1068,7 +1078,7 @@ def create_generic(top_env, declarations):
             collapsed.pop(index)
             collapsed.pop(index)
             collapsed.pop(index)
-            collapsed.insert(index, 'const TensorOptions & options={}')
+            collapsed.insert(index, 'const TensorOptions & options /*[CHECK THIS] should have ={}*/')
 
         if (any(formal == 'c10::optional<ScalarType> dtype=c10::nullopt' for formal in formals) and
             any(formal == 'c10::optional<Layout> layout=c10::nullopt' for formal in formals) and
@@ -1471,7 +1481,7 @@ def create_generic(top_env, declarations):
             return FunctionCode(definition=fn_definition, declaration=fn_declaration)
         
         def gen_namespace_collapsed_function2(option):
-            declaration = NATIVE_DISPATCH_DECLARATION
+            declaration = NATIVE_DISPATCH_DECLARATION_CONST
             fn_declaration = declaration.substitute(option, type_method_formals=collapse_formals(option['method_formals_with_defaults']))
 
             expanded_native_actuals = option['collapsed_method_actuals'].copy()
@@ -1483,7 +1493,7 @@ def create_generic(top_env, declarations):
             expanded_native_actuals.insert(index, 'options.layout()')
             expanded_native_actuals.insert(index, 'typeMetaToScalarType(options.dtype())')
 
-            fn_definition = COLLAPSED_FACTORY_DEFINITION.substitute(option, collapsed_formals = collapse_formals(option['method_formals']), expanded_native_actuals=expanded_native_actuals)
+            fn_definition = COLLAPSED_METHOD_DEFINITION.substitute(option, collapsed_formals = collapse_formals(option['method_formals']), expanded_native_actuals=expanded_native_actuals)
             return FunctionCode(definition=fn_definition, declaration=fn_declaration)
 
         # Emit #ifdef BUILD_NAMEDTENSOR macros for any code generated here
