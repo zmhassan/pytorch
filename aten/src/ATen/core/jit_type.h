@@ -20,6 +20,7 @@ namespace jit {
 struct Function;
 namespace script {
 struct CompilationUnit;
+struct ShadowClassType;
 }
 } // namespace jit
 } // namespace torch
@@ -1432,7 +1433,7 @@ struct CAFFE2_API ClassType : public NamedType {
   std::shared_ptr<CompilationUnit> compilation_unit();
   std::shared_ptr<const CompilationUnit> compilation_unit() const;
 
-  size_t numAttributes() const {
+  virtual size_t numAttributes() const {
     AT_ASSERT(attributeNames_.size() == attributeTypes_.size());
     return attributeNames_.size();
   }
@@ -1546,7 +1547,7 @@ struct CAFFE2_API ClassType : public NamedType {
   bool isSubtypeOfExt(const TypePtr rhs, std::ostream* why_not) const override;
   static const TypeKind Kind = TypeKind::ClassType;
 
- private:
+ protected:
   ClassType(
       c10::optional<QualifiedName> name,
       std::weak_ptr<CompilationUnit> cu,
@@ -1569,9 +1570,8 @@ struct CAFFE2_API ClassType : public NamedType {
 
   // List of methods associated with this class.
   std::vector<Function*> methods_;
-
+  friend struct ShadowClassType;
 };
-
 
 struct InterfaceType;
 using InterfaceTypePtr = std::shared_ptr<InterfaceType>;
