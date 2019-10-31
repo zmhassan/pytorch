@@ -140,24 +140,15 @@ auto result_ = (${first}).${name}(
 );
 """)
 CALL_NAMESPACE_WITH_TENSOR_OPTIONS = CodeTemplate("""\
-const auto options = TensorOptions()
-        .dtype(${dtype})
-        .layout(${layout})
-        .device(${device})
-        .pinned_memory(${pin_memory});
 #ifdef USE_STATIC_DISPATCH
-    auto result_ = at::${name}(${args_with_tensor_options});
+    auto result_ = at::_${name}(${args_with_tensor_options});
 #else
     auto result_ = torch::${name}(${args_with_tensor_options});
 #endif
 """)
+
 CALL_METHOD_WITH_TENSOR_OPTIONS = CodeTemplate("""\
-const auto options = TensorOptions()
-        .dtype(${dtype})
-        .layout(${layout})
-        .device(${device})
-        .pinned_memory(${pin_memory});;
-auto result_ = (${first}).${name}(${args_with_tensor_options});
+auto result_ = (${first})._${name}(${args_with_tensor_options});
 """)
 
 CONSTRUCTOR = CodeTemplate("""\
@@ -262,6 +253,15 @@ def is_backward_op(decl):
 def argument_order(decl):
     return decl.get('jit_argument_order') or list(range(len(decl['arguments'])))
 
+def check_if_factory_method(args):
+    for arg in args: 
+        if 'type' not in arg:
+            return False
+
+    a = any(arg['type'] == 'c10::optional<ScalarType>' for arg in args) and any(arg['type'] == 'c10::optional<Layout>' for arg in args) and any(arg['type'] == 'c10::optional<Device>' for arg in args) and any(arg['type'] == 'c10::optional<bool>' for arg in args)
+    c = any(arg['type'] == 'ScalarType' for arg in args) and any(arg['type'] == 'Layout' for arg in args) and any(arg['type'] == 'Device' for arg in args) and any(arg['type'] == 'bool' for arg in args)
+    b = any('TensorOptions' in arg['type'] for arg in args)
+    return a or b or c
 
 def gen_jit_dispatch(declarations, out, template_path, disable_autograd=False):
     REGISTER_ATEN_OPS_CPP = CodeTemplate.from_file(template_path + '/register_aten_ops.cpp')
@@ -274,25 +274,17 @@ def gen_jit_dispatch(declarations, out, template_path, disable_autograd=False):
         def pack_arguments(args):
             return ',\n'.join(args)
         is_namespace_function = 'namespace' in decl['method_of']
-        tensor_options_arg_index = decl.get('tensor_options_arg_index', None)
-        if tensor_options_arg_index is not None:
-            dtype = args[tensor_options_arg_index]
-            layout = args[tensor_options_arg_index + 1]
-            device = args[tensor_options_arg_index + 2]
-            pin_memory = args[tensor_options_arg_index + 3]
-            args_with_tensor_options = args[:tensor_options_arg_index] + \
-                ['options'] + args[(tensor_options_arg_index + 4):]
+
+        if check_if_factory_method(decl['arguments']):
             if is_namespace_function:
                 return CALL_NAMESPACE_WITH_TENSOR_OPTIONS.substitute(
-                    name=decl['name'], dtype=dtype, layout=layout,
-                    device=device, pin_memory=pin_memory,
-                    args_with_tensor_options=pack_arguments(args_with_tensor_options))
+                    name=decl['name'],
+                    args_with_tensor_options=pack_arguments(args))
             else:
                 return CALL_METHOD_WITH_TENSOR_OPTIONS.substitute(
-                    name=decl['name'], dtype=dtype, layout=layout,
-                    device=device, pin_memory=pin_memory,
-                    args_with_tensor_options=pack_arguments(args_with_tensor_options[1:]),
-                    first=args_with_tensor_options[0], num_inputs=num_inputs)
+                    name=decl['name'],
+                    args_with_tensor_options=pack_arguments(args[1:]),
+                    first=args[0], num_inputs=num_inputs)
         else:
             if is_namespace_function:
                 return CALL_NAMESPACE.substitute(name=decl['name'],

@@ -19,6 +19,10 @@
 using at::DimnameList;
 #endif
 
+using at::Device;
+using at::ScalarType;
+using at::Layout;
+
 namespace torch {
 
 namespace detail {
