@@ -11,6 +11,8 @@
 #include <torch/csrc/jit/operator.h>
 #include <torch/csrc/jit/subgraph_matcher.h>
 
+#include <torch/csrc/jit/script/shadow_class_type.h>
+
 #include <algorithm>
 #include <stack>
 
@@ -112,13 +114,17 @@ class InsertObserversHelper {
  public:
   explicit InsertObserversHelper(const ModuleQConfigMap& map)
       : module_qconfig_map_(map) {}
-  void insertObservers(script::Module& module, const std::string& method_name);
+  void insertObservers(
+      script::Module& module,
+      script::ShadowClassTypePtr s_cls,
+      const std::string& method_name);
 
  private:
   Node* insertObserverFor(
       Value* v,
       Graph* g,
       script::Module& module,
+      script::ShadowClassTypePtr s_cls,
       const QConfig& qconfig);
 
   void findIntermediateValuesInPattern(
@@ -158,6 +164,7 @@ Node* InsertObserversHelper::insertObserverFor(
     Value* v,
     Graph* g,
     script::Module& module,
+    script::ShadowClassTypePtr s_cls,
     const QConfig& qconfig) {
   // Skip observing bias
   if (bias_values_.count(v)) {
@@ -176,6 +183,11 @@ Node* InsertObserversHelper::insertObserverFor(
     observer_name = "_observer_" + std::to_string(uid_++);
   }
   module.register_module(observer_name, observer);
+  GRAPH_UPDATE(
+      "Adding attribute ",
+      observer_name,
+      "to ShadowClassType");
+  s_cls->addMutableAttribute(observer_name, observer.type());
   // Get handle of observer module
   Node* observer_instance = g->create(c10::prim::GetAttr);
   // self._observer_v
@@ -265,6 +277,7 @@ void InsertObserversHelper::propagateValues(
 
 void InsertObserversHelper::insertObservers(
     script::Module& module,
+    script::ShadowClassTypePtr s_cls,
     const std::string& method_name) {
   if (!module_qconfig_map_.count(module.module_object())) {
     // the module is added by us, e.g.: observer module
@@ -298,7 +311,7 @@ void InsertObserversHelper::insertObservers(
       auto qconfig = module_qconfig_map_.at(module.module_object());
       if (qconfig) {
         auto observer_node =
-            insertObserverFor(v, v->owningGraph(), module, qconfig.value());
+          insertObserverFor(v, v->owningGraph(), module, s_cls, qconfig.value());
         if (observer_node) {
           observer_for_input.emplace(observer_node);
         }
@@ -330,14 +343,16 @@ void InsertObserversHelper::insertObservers(
           }
         }
       }
-
       if (n->kind() == prim::CallMethod) {
         // If we find a call to a method of a child module,
         // we'll recursively insert observers for the forward function to
         // the child module.
         auto module_instance = n->inputs()[0];
         auto module_method_name = n->s(attr::name);
+        // TODO: looks like this block is not related to v? maybe we should
+        // move this outside
         script::Module callee_module;
+        script::ShadowClassTypePtr callee_s_cls;
         if (module_instance->node()->kind() == prim::GetAttr) {
           auto child_module_name = module_instance->node()->s(attr::name);
           auto child_module = module.find_module(child_module_name);
@@ -345,19 +360,26 @@ void InsertObserversHelper::insertObservers(
               child_module,
               "Child module " + child_module_name + " does not exist");
           callee_module = child_module.value();
+          auto callee_module_name = module_instance->node()->s(attr::name);
+          auto mt_opt = s_cls->getMutableAttribute(callee_module_name);
+          TORCH_CHECK(mt_opt.has_value(), "Failed to getMutableAttribute");
+          auto mt = mt_opt.value();
+          TORCH_CHECK(c10::holds_alternative<script::ShadowClassTypePtr>(mt), "Expected to get a ShadowClassType for child module");
+          callee_s_cls = c10::get<script::ShadowClassTypePtr>(mt);
         } else {
           TORCH_INTERNAL_ASSERT(
               module_instance == graph->inputs()[0],
               "We only support call method either on %self"
               "or child instance in insert_observers_pass right now");
           callee_module = module;
+          callee_s_cls = s_cls;
         }
         auto method_graph =
             callee_module.get_method(module_method_name).graph();
         propagateValues(n, method_graph);
         // Recursively insert observer for the forward function of child
         // module
-        insertObservers(callee_module, module_method_name);
+        insertObservers(callee_module, callee_s_cls, module_method_name);
       }
 
       for (Block* subblock : n->blocks()) {
@@ -371,7 +393,7 @@ void InsertObserversHelper::insertObservers(
     auto qconfig = module_qconfig_map_.at(module.module_object());
     // Skip inserting observer if no qconfig is specified
     if (qconfig) {
-      insertObserverFor(v, v->owningGraph(), module, qconfig.value());
+      insertObserverFor(v, v->owningGraph(), module, s_cls, qconfig.value());
     }
   }
 }
@@ -444,7 +466,10 @@ c10::optional<std::string> findObserverName(Value* v) {
 
 class QuantizeHelper {
  public:
-  QuantizeHelper(const script::Module& m) : module_(m) {}
+  QuantizeHelper(
+      const script::Module& m,
+      script::ShadowClassTypePtr s_cls) :
+      module_(m), s_cls_(s_cls) {}
   // quantization parameters and scalar type
   std::tuple<IValue, IValue> getQParams(Value* v);
   c10::optional<script::Module> findChildModuleToQuantize(
@@ -453,6 +478,9 @@ class QuantizeHelper {
   void removeObserver(Value* v, const std::string& observer_name);
   void destroyNodes() {
     // Destroy observer forward calls
+    for (const auto& observer_name: observer_modules_to_remove_) {
+      s_cls_->removeAttribute(observer_name);
+    }
     for (auto& n : nodes_to_destroy_) {
       n->destroy();
     }
@@ -460,6 +488,7 @@ class QuantizeHelper {
 
  private:
   const script::Module& module_;
+  script::ShadowClassTypePtr s_cls_;
   std::vector<std::string> observer_modules_to_remove_;
   std::vector<Node*> nodes_to_destroy_;
 };
@@ -468,7 +497,12 @@ void QuantizeHelper::removeObserver(
     Value* v,
     const std::string& observer_name) {
   // remove observer_module
+  GRAPH_UPDATE(
+      "Removing attribute: ",
+      observer_name,
+      "from shadow type");
   observer_modules_to_remove_.push_back(observer_name);
+
   // remove observer forward call
   for (const Use& u : v->uses()) {
     Node* user = u.user;
@@ -535,8 +569,8 @@ void QuantizeHelper::quantizeTensor(Value* v, bool insert_after) {
   auto tp = getQParams(v);
   auto qparams = std::get<0>(tp);
   auto scalar_type = std::get<1>(tp);
-  removeObserver(v, observer_name.value());
   Node* dequant;
+  removeObserver(v, observer_name.value());
   dequant = insertQuantDeQuantCall(v, qparams, scalar_type, insert_after);
   v->replaceAllUsesWith(dequant->output());
   Node* q = dequant->input(0)->node();
@@ -564,6 +598,7 @@ c10::optional<script::Module> QuantizeHelper::findChildModuleToQuantize(
 
 void InsertQuantDeQuantImpl(
     script::Module& module,
+    script::ShadowClassTypePtr s_cls,
     const std::string& method_name) {
   script::Method method = module.get_method(method_name);
   auto graph = method.graph();
@@ -579,7 +614,7 @@ void InsertQuantDeQuantImpl(
     }
   }
 
-  QuantizeHelper qh(module);
+  QuantizeHelper qh(module, s_cls);
   std::stack<Block*> blocks_to_visit;
   blocks_to_visit.push(graph->block());
   while (!blocks_to_visit.empty()) {
@@ -595,14 +630,22 @@ void InsertQuantDeQuantImpl(
           auto module_instance = v->node()->inputs()[0];
           auto module_method_name = v->node()->s(attr::name);
           c10::optional<script::Module> m;
+          script::ShadowClassTypePtr callee_s_cls;
           // calling method on self
           if (module_instance == graph->inputs()[0]) {
             m = module;
+            callee_s_cls = s_cls;
           } else {
             m = qh.findChildModuleToQuantize(module_instance);
+            auto child_module_name = module_instance->node()->s(attr::name);
+            auto mt_opt = s_cls->getMutableAttribute(child_module_name);
+            TORCH_CHECK(mt_opt.has_value(), "Failed to getMutableAttribute");
+            auto mt = mt_opt.value();
+            TORCH_CHECK(c10::holds_alternative<script::ShadowClassTypePtr>(mt), "Expected to get a ShadowClassType for child module");
+            callee_s_cls = c10::get<script::ShadowClassTypePtr>(mt);
           }
           if (m) {
-            InsertQuantDeQuantImpl(m.value(), module_method_name);
+            InsertQuantDeQuantImpl(m.value(), callee_s_cls, module_method_name);
           }
         }
         if (v->node()->kind() == prim::GetAttr &&
@@ -713,8 +756,9 @@ TORCH_API script::Module InsertObservers(
   ModuleQConfigMap module_qconfig_map;
   fillQConfigMap(module, qconfig_dict, module_qconfig_map);
   InsertObserversHelper helper(module_qconfig_map);
-  helper.insertObservers(module, method_name);
-  return module;
+  auto s_cls = script::ShadowClassType::create(module.type());
+  helper.insertObservers(module, s_cls, method_name);
+  return module.create_module_from_shadow(s_cls);
 }
 
 script::Module InsertQuantDeQuant(
@@ -722,12 +766,10 @@ script::Module InsertQuantDeQuant(
     const std::string& method_name,
     bool inplace) {
   script::Module module = inplace ? input_module : input_module.clone();
-  InsertQuantDeQuantImpl(module, method_name);
+  auto s_cls = script::ShadowClassType::create(module.type());
+  InsertQuantDeQuantImpl(module, s_cls, method_name);
 
-  // NOTE: Remove observer module does not work right now, we'll return
-  // the module with observer modules as a temporary workaround
-  // TODO: remove observer modules after we have a remove_module API
-  return module;
+  return module.create_module_from_shadow(s_cls);
 }
 
 void FoldQuantNodesIntoInputsOutputs(std::shared_ptr<Graph>& graph) {
