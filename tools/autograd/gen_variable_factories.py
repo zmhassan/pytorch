@@ -9,17 +9,11 @@ from .gen_variable_type import format_trace
 
 
 FUNCTION_TEMPLATE_TENSOR_OPTIONS = CodeTemplate("""\
-inline at::Tensor ${name}(${formals}) {
-  return _${name}(${collapsed_formals});
-}
-""")
-
-FUNCTION_TEMPLATE_UNDERSCORE = CodeTemplate("""\
-inline at::Tensor _${name}(${formals}) {
+inline at::Tensor ${name}(${collapsed_formals}) {
   ${pre_record_trace}
   at::Tensor tensor = ([&]() {
     at::AutoNonVariableTypeMode non_var_type_mode(true);
-    return at::_${name}(${actuals});
+    return at::_${name}(${uncollapsed_actuals});
   })();
   at::Tensor result =
     autograd::make_variable(std::move(tensor), /*requires_grad=*/${requires_grad});
@@ -71,6 +65,54 @@ def gen_variable_factories(out, declarations, template_path, disable_autograd=Fa
           CodeTemplate.from_file(template_path + "/variable_factories.h"),
           {"function_definitions": function_definitions})
 
+def collapse_formals(formals):
+        collapsed = formals.copy()
+        if (any(formal == 'c10::optional<ScalarType> dtype' for formal in formals) and
+            any(formal == 'c10::optional<Layout> layout' for formal in formals) and
+            any(formal == 'c10::optional<Device> device' for formal in formals) and 
+            any(formal == 'c10::optional<bool> pin_memory' for formal in formals)):
+            index = formals.index('c10::optional<ScalarType> dtype')
+
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.insert(index, 'const at::TensorOptions & options /*[CHECK THIS] should have ={}*/')
+
+        if (any(formal == 'c10::optional<ScalarType> dtype=c10::nullopt' for formal in formals) and
+            any(formal == 'c10::optional<Layout> layout=c10::nullopt' for formal in formals) and
+            any(formal == 'c10::optional<Device> device=c10::nullopt' for formal in formals) and 
+            any(formal == 'c10::optional<bool> pin_memory=c10::nullopt' for formal in formals)):
+            index = formals.index('c10::optional<ScalarType> dtype=c10::nullopt')
+
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.insert(index, 'const at::TensorOptions & options={}')
+
+        if (any(formal == 'ScalarType dtype' for formal in formals) and
+            any(formal == 'Layout layout' for formal in formals) and
+            any(formal == 'Device device' for formal in formals) and 
+            (any(formal == 'bool pin_memory' for formal in formals) or any(formal == 'bool pin_memory=false' for formal in formals))):
+            index = formals.index('ScalarType dtype')
+
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.pop(index)
+            collapsed.insert(index, 'const at::TensorOptions & options')
+        
+        return collapsed
+
+def collapse_actuals(actuals):
+    collapsed = actuals.copy()
+    index = actuals.index('dtype')
+    collapsed[index] = 'typeMetaToScalarType(options.dtype())'
+    collapsed[index + 1] = 'options.layout()'
+    collapsed[index + 2] = 'options.device()'
+    collapsed[index + 3] = 'options.pinned_memory()'
+    return collapsed
 
 def process_function(decl, has_tensor_options, disable_autograd):
     formals = []
@@ -109,7 +151,23 @@ def process_function(decl, has_tensor_options, disable_autograd):
     else:
         pre_record_trace, post_record_trace = '', ''
 
-    return FUNCTION_TEMPLATE.substitute(
-        name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,
-        pre_record_trace=pre_record_trace, post_record_trace=post_record_trace
-    )
+    if not has_tensor_options:
+        return FUNCTION_TEMPLATE.substitute(
+            name=decl["name"], formals=formals, actuals=actuals, requires_grad=requires_grad,
+            pre_record_trace=pre_record_trace, post_record_trace=post_record_trace
+        )
+    else:
+        print("\n\n\n here: ")
+        uncollapsed_actuals = collapse_actuals(actuals)
+        collapsed_formals = collapse_formals(decl["formals"])
+        
+        print(decl["name"])
+        print(decl["formals"])
+        print(formals)
+        print(actuals)
+        print(uncollapsed_actuals)
+        print(collapsed_formals)
+        return FUNCTION_TEMPLATE_TENSOR_OPTIONS.substitute(
+            name=decl["name"], formals=formals, collapsed_formals = collapsed_formals, actuals=actuals, uncollapsed_actuals=uncollapsed_actuals, requires_grad=requires_grad,
+            pre_record_trace=pre_record_trace, post_record_trace=post_record_trace
+        )
