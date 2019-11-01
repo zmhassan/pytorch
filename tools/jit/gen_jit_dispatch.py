@@ -298,6 +298,27 @@ def gen_jit_dispatch(declarations, out, template_path, disable_autograd=False):
     def requires_lvalue(arg):
         return 'jit_type' in arg and arg['jit_type'] in {"Tensor!", "Tensor(a!)"}
 
+    def collapse_arguments(args):
+        collapsed = args.copy()
+        if (any(arg['dynamic_type'] == 'ScalarType' for arg in args) and 
+           any(arg['dynamic_type'] == 'Layout' for arg in args) and 
+           any(arg['dynamic_type'] == 'Device' for arg in args) and 
+           any(arg['dynamic_type'] == 'bool' for arg in args)):
+
+           index = 0
+           for i in range(len(args)):
+               if args[i]['dynamic_type'] == 'ScalarType':
+                   break
+               else:
+                   index += index
+        
+           collapsed.pop(index)
+           collapsed.pop(index)
+           collapsed.pop(index)
+           collapsed.pop(index)
+           collapsed.insert(index, {"annotation" : "None", "dynamic_type": "TensorOptions", "is_nullable": "False", "default": "{}", "kwarg_only": "True", "name": "options", "type": "const TensorOptions &", })
+        return collapsed
+
     def emit_decl_variant(decl):
         kw_assignments = []
 
@@ -306,22 +327,32 @@ def gen_jit_dispatch(declarations, out, template_path, disable_autograd=False):
         # before calling the function
         lvalues = []
 
+        declCollapsed = decl.copy()
+        declCollapsed['arguments'] = collapse_arguments(declCollapsed['arguments'])
+
+        if declCollapsed['name'] == '_empty_per_channel_affine_quantized':
+            print("---> here: ", declCollapsed)
+
         arguments = []
-        num_inputs = len(decl['arguments'])
+        num_inputs = len(declCollapsed['arguments'])
         op_capture = ''
-        order = argument_order(decl)
-        for i, arg in enumerate(decl['arguments']):
+        order = argument_order(declCollapsed)
+        for i, arg in enumerate(declCollapsed['arguments']):
             value = from_ivalue(arg, '(std::move(peek(stack, {}, {})))'.format(order[i], num_inputs))
             if requires_lvalue(arg):
                 lvalues.append('auto {} = {};\n'.format(arg['name'], value))
                 value = arg['name']
             arguments.append(value)
 
-        call = get_invocation(decl, arguments, num_inputs)
+        if declCollapsed['name'] == '_empty_per_channel_affine_quantized':
+            print("---> call: ", arguments)
+            print("---> call: ", num_inputs)
 
-        returns = decl['returns']
+        call = get_invocation(declCollapsed, arguments, num_inputs)
 
-        constructor = CONSTRUCTOR.substitute(name=decl['name'],
+        returns = declCollapsed['returns']
+
+        constructor = CONSTRUCTOR.substitute(name=declCollapsed['name'],
                                              call=call,
                                              kw_assignments=kw_assignments,
                                              num_inputs=num_inputs,
