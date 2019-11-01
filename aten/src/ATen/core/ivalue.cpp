@@ -199,6 +199,12 @@ void ivalue::Object::setAttr(const std::string& name, IValue v) {
   setSlot(slot, std::move(v));
 }
 
+void ivalue::Object::unsafeRemoveAttr(const std::string& name) {
+  const size_t slot = type_.type_->getAttributeSlot(name);
+  unsafeRemoveSlot(slot);
+  type_.type_->unsafeRemoveAttribute(name);
+}
+
 void ivalue::Object::resizeObject(size_t slot) {
   AT_ASSERT(slot < type()->numAttributes());
   slots_.resize(type()->numAttributes());
