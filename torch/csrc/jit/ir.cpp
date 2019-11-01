@@ -1047,6 +1047,7 @@ Node::Node(Graph* graph_, NodeKind kind_)
       graph_(graph_),
       owning_block_(nullptr),
       scope_(graph_->current_scope_),
+      callstack_(c10::nullopt),
       op_(nullptr),
       topo_position_(0) {
   graph_->all_nodes.emplace(this);
@@ -1098,6 +1099,7 @@ void Node::cloneFrom(Node* s) {
     scope_ = s->scope_;
   }
   copyAttributes(*s);
+  callstack_ = s->callstack_;
 }
 
 void Node::replaceAllUsesWith(Node* n) {
@@ -1640,6 +1642,22 @@ void Graph::freeBlock(Block* b) {
   all_blocks.erase(it);
 }
 
+void Node::setCallStack(InlinedCallStackPtr cs) {
+  callstack_ = cs;
+}
+
+static InlinedCallStackPtr getOrCreateCallStackEntry(
+    InlinedCallStackPtr cs,
+    Function* f,
+    const SourceRange& sr) {
+  return cs ? cs : c10::make_intrusive<InlinedCallStack>(f, sr);
+}
+
+void Node::insertCallStackEntry(Function* f, const SourceRange& sr) {
+  AT_ASSERT(callstack_);
+  callstack_ = (*callstack_)->insertCallStackEntry(f, sr);
+}
+
 at::ArrayRef<Value*> createTupleUnpack(Value* v) {
   // small peephole optimization to ensure IntArrayRef attributes can still turn
   // into constants e.g. in x.expand([3, 4])
@@ -1652,10 +1670,29 @@ at::ArrayRef<Value*> createTupleUnpack(Value* v) {
 
 std::vector<Value*> inlineCallTo(Node* to_replace, Function* callee) {
   WithInsertPoint guard(to_replace);
+  std::unordered_map<Value*, Value*> value_map;
   auto new_outputs = insertGraph(
       *to_replace->owningGraph(),
       *(callee->optimized_graph()),
-      to_replace->inputs());
+      to_replace->inputs(),
+      value_map);
+
+  // TODO: We might need to use nodes_map instead of value_map. Otherwise, we
+  // are missing nodes without outputs (e.g. prim::Print).
+  std::unordered_set<Node*> updated_nodes;
+  InlinedCallStackPtr new_callstack_entry;
+  for (const auto& kv : value_map) {
+    Node* new_node = kv.second->node();
+    if (updated_nodes.insert(new_node).second) {
+      if (!new_node->callstack()) {
+        new_callstack_entry = getOrCreateCallStackEntry(
+            new_callstack_entry, callee, to_replace->sourceRange());
+        new_node->setCallStack(new_callstack_entry);
+      } else {
+        new_node->insertCallStackEntry(callee, to_replace->sourceRange());
+      }
+    }
+  }
 
   const auto& old_outputs = to_replace->outputs();
 
