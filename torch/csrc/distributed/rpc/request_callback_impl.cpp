@@ -1,4 +1,5 @@
 #include <torch/csrc/distributed/rpc/request_callback_impl.h>
+
 #include <c10/util/C++17.h>
 #include <torch/csrc/distributed/autograd/context/dist_autograd_container.h>
 #include <torch/csrc/distributed/autograd/context/dist_autograd_context.h>
@@ -59,8 +60,8 @@ Message RequestCallbackImpl::processRpc(
       std::vector<torch::Tensor> responseTensorTable;
       auto payload = PythonRpcHandler::getInstance().generatePythonUDFResult(
           pyCall.pickledPayload(), pyCall.tensors(), responseTensorTable);
-      return std::move(PythonResp(
-                           std::move(payload), std::move(responseTensorTable)))
+      return std::move(
+                 PythonResp(std::move(payload), std::move(responseTensorTable)))
           .toMessage();
     }
     case MessageType::SCRIPT_REMOTE_CALL: {
