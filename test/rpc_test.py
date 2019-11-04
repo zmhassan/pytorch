@@ -5,6 +5,8 @@ import sys
 import unittest
 from collections import namedtuple
 from unittest import mock
+import time
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -649,8 +651,6 @@ class RpcTest(object):
         self.assertEqual(ret, torch.ones(2, 2) + 1)
 
     def _stress_test_rpc(self, f, repeat=1000, args=()):
-        import time
-
         n = self.rank + 1
         dst_rank = n % self.world_size
         futs = []
@@ -978,3 +978,25 @@ class RpcTest(object):
             return "expected result"
 
         self.assertEqual(test_func(self), "expected result")
+
+    def test_sender_exceptions(self):
+        dist.init_process_group(
+            backend="gloo",
+            init_method=self.init_method,
+            rank=self.rank,
+            world_size=self.world_size,
+            timeout=timedelta(seconds=10))
+
+        rpc.init_model_parallel(
+            self_name="worker%d" % self.rank,
+            backend=TEST_CONFIG.rpc_backend,
+            self_rank=self.rank,
+            init_method=self.init_method,
+        )
+
+        if self.rank == 0:
+            # allow worker 1 to exit without joining
+            time.sleep(3)
+            fut = rpc.rpc_async("worker1", torch.add, args=(torch.ones(1), 3))
+            with self.assertRaises(RuntimeError):
+                fut.wait()
