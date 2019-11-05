@@ -229,7 +229,7 @@ SugaredValuePtr ModuleValue::desugarModuleContainer(
       continue;
     }
 
-    if (isModuleType(attrType)) {
+    if (attrType->is_module()) {
       submoduleNames.push_back(selfType->getAttributeName(i));
     }
   }
@@ -274,13 +274,18 @@ std::shared_ptr<SugaredValue> ModuleValue::attr(
     const std::string& field) {
   // 1. Look inside script::Module object for the field.
   const auto& selfType = concreteType_->getJitType();
-  if (selfType->hasAttribute(field) && isModuleType(selfType->getAttribute(field))) {
+  if (selfType->hasAttribute(field) && selfType->getAttribute(field)->is_module()) {
     // ...if it's a submodule, return it as a new ModuleValue.
     const auto submoduleConcreteType =
         concreteType_->findSubmoduleConcreteType(field);
-    TORCH_INTERNAL_ASSERT(submoduleConcreteType);
-    return std::make_shared<ModuleValue>(
-        m.graph()->insertGetAttr(self_, field), submoduleConcreteType);
+    if (submoduleConcreteType != nullptr) {
+      return std::make_shared<ModuleValue>(
+          m.graph()->insertGetAttr(self_, field), submoduleConcreteType);
+    } else {
+      // if submodule concrete type is not found, it is a Module Interface type,
+      // we return a SimpleValue instead of ModuleValue.
+      return SimpleValue(self_).attr(loc, m, field);
+    }
   } else if (selfType->hasAttribute(field) || selfType->getMethod(field)) {
       // ...otherwise, methods, parameters, attributes, and buffers are all
       // first class so they get returned as SimpleValues
