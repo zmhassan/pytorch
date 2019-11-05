@@ -1,5 +1,6 @@
 import warnings
 import importlib
+
 from inspect import getmembers, isfunction
 
 # The symbolic registry "_registry" is a dictionary that maps operators
@@ -15,6 +16,17 @@ from torch.onnx.symbolic_helper import _onnx_stable_opsets
 for opset_version in _onnx_stable_opsets:
     module = importlib.import_module('torch.onnx.symbolic_opset{}'.format(opset_version))
     _symbolic_versions[opset_version] = module
+
+def register_quantized_ops(domain, version):
+    # Register all the non-quantized ops
+    register_version('', version)
+    # Register all quantized ops
+    module = importlib.import_module('torch.onnx.symbolic_caffe2')
+    _symbolic_versions['caffe2'] = module
+    quant_version_ops = getmembers(_symbolic_versions['caffe2'])
+    for op in quant_version_ops:
+        if isfunction(op[1]) and not is_registered_op(op[0], domain, version):
+            register_op(op[0], op[1], domain, version)
 
 def register_version(domain, version):
     if not is_registered_version(domain, version):
